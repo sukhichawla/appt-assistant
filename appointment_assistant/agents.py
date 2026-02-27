@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, time
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from appointment_assistant.calendar_store import Appointment, CalendarStore, check_business_hours
+from appointment_assistant.llm_client import parse_appointment_with_llm
 
 
 def _is_greeting(text: str) -> bool:
@@ -136,8 +138,19 @@ class NLUAgent(Agent):
         super().__init__("NLUAgent")
 
     def handle(self, message: Message, context: ConversationContext) -> List[Message]:
-        user_text = message.content.lower()
-        parsed = self._simple_parse(user_text)
+        # Prefer a real LLM when configured; fall back to the rule-based parser otherwise.
+        user_text = message.content
+        parsed: Optional[Dict[str, Any]] = None
+
+        # Use LLM only if an API key is configured
+        if os.getenv("OPENAI_API_KEY"):
+            llm_parsed = parse_appointment_with_llm(user_text)
+            if llm_parsed is not None:
+                parsed = llm_parsed
+
+        # Fallback: existing rule-based parser
+        if parsed is None:
+            parsed = self._simple_parse(user_text.lower())
 
         if parsed is None:
             return [
