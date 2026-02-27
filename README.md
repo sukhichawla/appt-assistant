@@ -1,3 +1,9 @@
+---
+title: Multi-Agent Appointment Assistant
+sdk: streamlit
+app_file: appointment_assistant/streamlit_app.py
+---
+
 ### Multi-Agent AI Appointment Assistant
 
 ### 1. Overview
