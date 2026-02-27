@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -113,6 +114,9 @@ def get_or_create_state() -> tuple[CalendarStore, Orchestrator]:
 
 def render_sidebar_calendar(calendar: CalendarStore) -> None:
     with st.sidebar:
+        # Show which NLU mode is active (OpenAI vs rule-based)
+        nlu_mode = "OpenAI" if os.getenv("OPENAI_API_KEY") else "Rule-based"
+        st.caption(f"NLU: **{nlu_mode}**")
         st.markdown('<div class="sidebar-title">📅 Calendar</div>', unsafe_allow_html=True)
         if not calendar.appointments:
             st.markdown(
