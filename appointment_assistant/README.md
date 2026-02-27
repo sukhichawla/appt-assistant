@@ -78,6 +78,7 @@ The core idea is a **multi‑agent orchestration pattern** that you can later co
 At repo root (recommended):
 
 ```text
+<<<<<<< HEAD
 .
 ├── appointment_assistant/
 │   ├── __init__.py
@@ -91,6 +92,16 @@ At repo root (recommended):
 ├── README.md
 ├── DEPLOY_HUGGINGFACE.md  # step-by-step HF deployment guide
 └── .gitignore
+=======
+appointment_assistant/
+├── agents.py            # All agent classes + orchestrator
+├── calendar_store.py    # Appointment model and in-memory calendar
+├── main.py              # CLI entrypoint (terminal)
+├── streamlit_app.py     # Streamlit web UI
+├── __init__.py          # Makes this a Python package
+├── requirements.txt     # Python dependencies
+├── README.md            # Project documentation (this file)
+>>>>>>> bd8ce37fe6c9a29b13989b98efe96e4bc818eb66
 ```
 
 Key modules:
