@@ -48,7 +48,6 @@ appointment_assistant/
 ├── __init__.py          # Makes this a Python package
 ├── requirements.txt     # Python dependencies
 ├── README.md            # Project documentation (this file)
-└── SPEAKER_NOTES.md     # Slide-by-slide speaker notes
 ```
 
 - **`calendar_store.py`**  
