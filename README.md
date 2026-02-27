@@ -1,323 +1,338 @@
-## Multi-Agent AI Appointment Assistant
+### Multi-Agent AI Appointment Assistant
 
 ### 1. Overview
 
-This project is a **multi-agent AI Appointment Assistant** designed as a capstone project.  
-It simulates how several specialized AI agents can collaborate to understand a natural-language request, schedule an appointment, resolve conflicts, and confirm the final booking to the user.
+This project is a **Multi-Agent AI Appointment Assistant** built in Python.  
+It shows how several specialized agents can work together to understand natural‑language requests, schedule appointments, resolve conflicts, and keep a clear conversational experience.
 
-The project is implemented in **Python** and runs as a **command-line application**.  
-You type a natural language request (for example:  
-“Book a dentist appointment for tomorrow at 3pm for 1 hour”), and the system routes it through a pipeline of agents:
+The assistant runs as:
 
-- **NLU Agent** – interprets your text and extracts structured appointment details.
-- **Scheduling Agent** – checks the in-memory calendar and tries to add the appointment.
-- **Conflict Resolution Agent** – proposes an alternative time if there is a conflict.
-- **Notification Agent** – generates a clear, user-friendly confirmation message.
+- A **Streamlit web app** (primary demo).
+- A simple **CLI app** for the original baseline.
 
-This architecture demonstrates **multi-agent collaboration**, **task specialization**, and a **simple orchestration layer** you can extend with real LLMs or external calendar APIs.
+The core idea is a **multi‑agent orchestration pattern** that you can later connect to real calendars or more advanced LLMs.
 
 ---
 
 ### 2. Features
 
 - **Natural-language appointment requests**  
-  Describe what you want in plain English (date, time, duration, and purpose).
+  “Book a dentist appointment tomorrow at 3pm for 1 hour” or “Book a meeting on 12/31/2026 at 2pm”.
 
-- **Multi-agent pipeline**  
-  Separate agents for understanding, scheduling, conflict resolution, and notifications.
+- **Multi-agent architecture**  
+  - **NLU Agent** – turns free text into structured appointment data.
+  - **Scheduling Agent** – books into the calendar, enforcing business rules.
+  - **Conflict Resolution Agent** – suggests alternative times when there’s a clash.
+  - **Reschedule Agent** – moves an existing appointment to a new time.
+  - **Cancel Agent** – cancels an existing appointment.
+  - **Notification Agent** – summarizes the final result in friendly language.
+  - **Orchestrator** – coordinates all agents and tracks the conversation.
 
-- **Conflict detection & simple rescheduling**  
-  Detects overlapping appointments and attempts to find the next available 30-minute slot.
+- **Business rules**  
+  - Working days: **Monday–Friday only** (no weekends).
+  - Working hours: **8:00–17:00**, last start **16:30**.
+  - **Lunch break 13:00–14:00** (no bookings).
+  - Basic **holiday list** (e.g. New Year’s, July 4th, Christmas).
 
-- **In-memory calendar**  
-  Stores appointments during program execution, with a simple listing view.
+- **Smart conflict handling**  
+  - Detects overlaps with existing appointments.
+  - Proposes a **next free slot** and asks the user to confirm **yes/no** before booking.
 
-- **LLM-ready design**  
-  The current NLU agent is intentionally lightweight and rule-based, but its design makes it easy to swap in calls to an LLM API (e.g. OpenAI) for more powerful understanding.
+- **Reschedule and cancel flows**  
+  - “Reschedule my dentist appointment to 4pm” – finds and moves the existing slot.
+  - “Cancel my meeting tomorrow” – finds and removes it, or lists what currently exists if unclear.
+
+- **Conversational behavior & out‑of‑scope handling**  
+  - Friendly responses to greetings and “How are you?” without booking anything.
+  - Out‑of‑scope questions (e.g. weather, jokes) get a polite message that the assistant only handles appointments.
+
+- **Date‑only booking with slot selection**  
+  - If the user specifies only a date (“Book a meeting tomorrow”) the system:
+    - Lists all **available slots** on that day, respecting business rules.
+    - Asks the user to **pick a time** (e.g. “2pm”), then books it.
+
+- **Richer date parsing**  
+  - “today”, “tomorrow”, weekday names.
+  - Month + day: “July 4th”, “March 3”.
+  - Numeric dates:
+    - Short: `3/3`, `12/25`.
+    - Full: `12/31/2026`.
+  - Time parsing avoids confusing “4th” in “July 4th” with 4:00.
+
+- **Streamlit UI**  
+  - Sidebar with **calendar cards** (dark theme) showing scheduled appointments.
+  - Main area with:
+    - Big title and quick description of what the assistant can do.
+    - Transparent conversation area.
+    - Text input + buttons (Send / Yes / No / Clear).
+    - Input automatically clears after each action.
+
+- **Optional real LLM for NLU (OpenAI)**  
+  - If configured, the NLU Agent uses an OpenAI chat model to parse appointments.
+  - If the LLM is unavailable or fails, it **falls back** to the built‑in rule‑based parser.
 
 ---
 
 ### 3. Project Structure
 
+At repo root (recommended):
+
 ```text
-appointment_assistant/
-├── agents.py            # All agent classes + orchestrator
-├── calendar_store.py    # Appointment model and in-memory calendar
-├── main.py              # CLI entrypoint (terminal)
-├── streamlit_app.py     # Streamlit web UI
-├── __init__.py          # Makes this a Python package
-├── requirements.txt     # Python dependencies
-├── README.md            # Project documentation (this file)
-└── SPEAKER_NOTES.md     # Slide-by-slide speaker notes
+.
+├── appointment_assistant/
+│   ├── __init__.py
+│   ├── agents.py
+│   ├── calendar_store.py
+│   ├── llm_client.py
+│   ├── main.py
+│   ├── streamlit_app.py
+│   └── requirements.txt  # local use inside the package (may be duplicated at root)
+├── requirements.txt       # root-level for deployment (e.g. Hugging Face)
+├── README.md
+├── DEPLOY_HUGGINGFACE.md  # step-by-step HF deployment guide
+└── .gitignore
 ```
 
-- **`calendar_store.py`**  
-  Defines an `Appointment` dataclass and a `CalendarStore` class that:
-  - Stores appointments in memory
-  - Detects overlapping appointments
-  - Suggests the next free time slot when there is a conflict
+Key modules:
 
-- **`agents.py`**  
-  Contains:
-  - `Message` dataclass – simple message-passing structure between agents.
-  - `ConversationContext` – shared state (e.g. parsed appointment, final booking).
-  - `Agent` base class – interface for all agents.
-  - `NLUAgent` – parses the user’s natural language request into a structured appointment.
-  - `SchedulingAgent` – checks conflicts and reserves time on the `CalendarStore`.
-  - `ConflictResolutionAgent` – proposes an alternative appointment time.
-  - `NotificationAgent` – produces the final user-facing confirmation message.
-  - `Orchestrator` – coordinates the flow across all agents for each user request.
+- `agents.py`  
+  - Defines `Message`, `ConversationContext`, `Agent` base class.  
+  - Implements `NLUAgent`, `SchedulingAgent`, `ConflictResolutionAgent`, `RescheduleAgent`, `CancelAgent`, `NotificationAgent`, and the `Orchestrator`.
 
-- **`main.py`**  
-  Implements the **command-line interface**, including:
-  - A simple text menu (create appointment, list appointments, exit).
-  - Routes each natural-language request through the `Orchestrator`.
-  - Prints a conversation-style transcript showing how each agent responded.
+- `calendar_store.py`  
+  - `Appointment` dataclass.  
+  - `CalendarStore` with:
+    - `add`, `remove`, `find_conflicts`.
+    - `get_available_slots(date, duration)` – respects business rules.
+    - `suggest_next_free_slot(candidate)` – used by conflict resolution.
+  - `check_business_hours(appointment)` and constants for working hours, lunch, and holidays.
 
-- **`streamlit_app.py`**  
-  Implements a **Streamlit web UI**:
-  - Text area where the user types a natural-language request.
-  - Button to trigger the multi-agent pipeline.
-  - Left panel: full agent conversation transcript (user + agents).
-  - Right panel: live view of the in-memory calendar as a table.
+- `llm_client.py`  
+  - Thin wrapper over the `openai` Python client.  
+  - `parse_appointment_with_llm(user_text)`:
+    - Calls an OpenAI chat model (default `gpt-4o-mini`, configurable).
+    - Asks for JSON with title, start, end, duration, etc.
+    - Returns a Python dict compatible with the rule-based parser.
+
+- `main.py`  
+  - Simple CLI runner for the assistant (original interface).
+
+- `streamlit_app.py`  
+  - Web UI (sidebar calendar + main chat area).  
+  - Manages session state for:
+    - Conversation transcript.
+    - Currently pending conflict suggestion (`pending_alternative`).
+    - Pending date-only slot selection (`pending_slot_request`).
 
 ---
 
-### 4. Installation & Setup
+### 4. Installation & Setup (Local)
 
-#### 4.1. Prerequisites
-
-- **Python 3.10+** installed and available on your PATH.
-- A terminal or command prompt (PowerShell, CMD, etc.).
-
-#### 4.2. Create and activate a virtual environment (recommended)
+#### 4.1. Clone the repo
 
 ```bash
-cd appointment_assistant
+git clone https://github.com/<your-username>/<your-repo-name>.git
+cd <your-repo-name>
+```
 
-# Create virtual environment (Windows)
+#### 4.2. Create a virtual environment (recommended)
+
+```bash
 python -m venv .venv
-
-# Activate (PowerShell)
-.\.venv\Scripts\Activate.ps1
-
-# or (CMD)
-.\.venv\Scripts\activate.bat
+# Windows PowerShell
+. .venv/Scripts/Activate.ps1
+# macOS/Linux
+source .venv/bin/activate
 ```
 
 #### 4.3. Install dependencies
+
+From the **repo root** (the folder containing `requirements.txt`):
 
 ```bash
 pip install -r requirements.txt
 ```
 
-> Note: The current version uses only the standard library and a light dependency;  
-> you can easily add more (e.g. `openai`, `fastapi`) as you extend the project.
+This installs:
+
+- `streamlit`
+- `python-dateutil`
+- `openai` (for optional LLM NLU)
 
 ---
 
 ### 5. Running the Assistant
 
-From the **parent directory** of `appointment_assistant`, you can run either:
+#### 5.1. Run the Streamlit web app (recommended)
 
-#### 5.1. CLI (terminal) mode
-
-```bash
-python -m appointment_assistant.main
-```
-
-You will see a menu like:
-
-```text
-=== Multi-Agent AI Appointment Assistant ===
-Type natural language like:
-  "Book a dentist appointment for tomorrow at 3pm for 1 hour"
-or choose to list existing appointments.
-
-Menu:
-1) Create a new appointment (natural language)
-2) List appointments
-3) Exit
-```
-
-##### Example scenario (happy path)
-
-1. Choose `1` to create a new appointment.  
-2. Enter:  
-   `Book a dentist appointment for tomorrow at 3pm for 1 hour`
-3. The assistant will:
-   - NLU Agent: Extract the time, date, duration, and title.
-   - Scheduling Agent: Check the calendar, find it free, and add the appointment.
-   - Notification Agent: Confirm your booking in friendly language.
-4. Choose `2` to list appointments and verify that the appointment is stored.
-
-##### Example scenario (conflict + resolution)
-
-1. First, book an appointment:  
-   `Schedule a meeting today at 10am for 1 hour`
-2. Then, try to book another:  
-   `Schedule a catch up for today at 10:30am for 30 minutes`
-3. The flow will be:
-   - NLU Agent parses the new request.
-   - Scheduling Agent detects a conflict with the existing appointment.
-   - Conflict Resolution Agent proposes the next available 30-minute slot.
-   - Scheduling Agent re-checks and books the proposed alternative.
-   - Notification Agent confirms the new, conflict-free booking.
-
----
-
-#### 5.2. Streamlit web app (browser) mode
-
-To launch the Streamlit UI, from the **parent directory** of `appointment_assistant` run:
+From the repo root:
 
 ```bash
 streamlit run appointment_assistant/streamlit_app.py
 ```
 
-Then open the URL shown in the terminal (usually `http://localhost:8501`).
+Then open the URL printed in the terminal (usually `http://localhost:8501`).
 
-In the web app you can:
+You should see:
 
-- Type the appointment description into a text area.
-- Click **Create appointment** to run the multi-agent pipeline.
-- See the **agent transcript** on the left (User, NLU, Scheduling, Conflict Resolution, Notification).
-- See a live table of all **current appointments** on the right.
+- **Sidebar** with the in-memory calendar (cards for each appointment).
+- **Main area** with:
+  - Title.
+  - Short description of capabilities.
+  - Chat transcript.
+  - Input area and buttons.
 
----
+Try phrases like:
 
-### 6. How the Multi-Agent System Works
+- “Book a dentist appointment tomorrow at 3pm for 1 hour.”
+- “Reschedule my dentist appointment to 4pm.”
+- “Cancel my meeting tomorrow.”
+- “What appointments do I have?”
+- “Book a meeting on July 4th at 3pm.”
+- “Book a meeting on 12/31/2026 at 2pm.”
+- “Book a meeting tomorrow” → then choose a time from the offered slots.
 
-#### 6.1. Message passing and context
+#### 5.2. Run the CLI version (baseline)
 
-- Each agent receives a `Message` and a shared `ConversationContext`.
-- The `ConversationContext` holds:
-  - The shared `CalendarStore`
-  - Parsed appointment details
-  - The final confirmed appointment
-- Agents return a list of new messages, which are appended to a transcript.
+From the repo root:
 
-#### 6.2. Agent responsibilities
+```bash
+python -m appointment_assistant.main
+```
 
-- **NLUAgent**
-  - Parses free text.
-  - Extracts:
-    - Date (today, tomorrow, or weekday names)
-    - Time (e.g. `3pm`, `15:30`)
-    - Duration (e.g. `30 minutes`, `1 hour`)
-    - A heuristic title (e.g. “dentist appointment”).
-
-- **SchedulingAgent**
-  - Converts the parsed data into an `Appointment`.
-  - Uses `CalendarStore` to detect conflicts.
-  - On success: saves the appointment and updates the context.
-  - On conflict: emits a message with conflict metadata.
-
-- **ConflictResolutionAgent**
-  - Reads the conflicting `Appointment`.
-  - Uses `CalendarStore.suggest_next_free_slot(...)` to find the next available slot.
-  - Updates the context with the suggested alternative.
-
-- **NotificationAgent**
-  - Reads the `final_appointment` from the context.
-  - Produces a human-friendly confirmation message.
-
-- **Orchestrator**
-  - Controls the order:
-    1. `NLUAgent`
-    2. `SchedulingAgent`
-    3. `ConflictResolutionAgent` (if needed)
-    4. `SchedulingAgent` again (after alternative)
-    5. `NotificationAgent`
-  - Returns the full transcript to the CLI to display.
+Follow the on-screen menu to create and list appointments.
 
 ---
 
-### 7. Extending the Project (Ideas for Capstone Enhancements)
+### 6. Real LLM Integration (OpenAI)
 
-- **Integrate a real LLM**  
-  Replace the rule-based `NLUAgent` with an LLM-backed one using an API like OpenAI:
-  - Send the user’s text and receive structured JSON for date, time, and title.
-  - Improves robustness and language coverage.
+The system can optionally use a **real LLM** for NLU via the OpenAI API.
 
-- **Web or mobile UI**  
-  - Build a simple **web front-end** using `FastAPI` + `React` or use `Streamlit` for a quick UI.
-  - Add authentication and multiple users.
+#### 6.1. How it works
 
-- **External calendar integration**
-  - Connect to Google Calendar or Outlook APIs.
-  - Persist appointments across runs and sync with real user calendars.
+- `NLUAgent.handle`:
+  - If `OPENAI_API_KEY` is set:
+    - Calls `parse_appointment_with_llm(user_text)` (in `llm_client.py`).
+    - If that returns structured data, it uses it.
+  - If not set, or if any error occurs (API, JSON parsing, etc.):
+    - Falls back to `_simple_parse(...)`, the existing rule‑based parser.
 
-- **Additional specialized agents**
-  - Reminder Agent – schedules reminders before appointments.
-  - Preference Agent – learns preferred times/locations for different appointment types.
-  - Explanation Agent – explains why certain time slots were chosen or rejected.
+This keeps the rest of the pipeline unchanged while allowing a more powerful understanding when an LLM is available.
+
+#### 6.2. Enabling the LLM locally
+
+1. Ensure dependencies are installed (see above).
+2. Set the API key in your shell (PowerShell example):
+
+   ```powershell
+   $env:OPENAI_API_KEY = "sk-...your-real-key..."
+   ```
+
+3. (Optional) Choose a model:
+
+   ```powershell
+   $env:OPENAI_MODEL = "gpt-4o-mini"
+   ```
+
+4. Run Streamlit:
+
+   ```bash
+   streamlit run appointment_assistant/streamlit_app.py
+   ```
+
+If you unset `OPENAI_API_KEY`, the app automatically returns to the pure rule‑based NLU.
 
 ---
 
-### 8. How to Present This as a Capstone
+### 7. Business Rules & Calendar Logic
 
-When presenting:
+The calendar lives in memory via `CalendarStore`:
 
-- Emphasize **why a multi-agent approach** is useful:
-  - Each agent has a clear, focused responsibility.
-  - Easier to test and extend compared to a single monolithic model.
-- Show the **step-by-step transcript** of how agents collaborate on a request.
-- Highlight how you could **plug in more powerful AI models** (LLMs) without changing the overall architecture.
-- Discuss trade-offs:
-  - Simplicity vs. intelligence (rule-based vs. LLM-based NLU).
-  - In-memory vs. persistent / cloud-based calendars.
+- **Business hours**  
+  - Valid appointment windows are enforced by `check_business_hours`.
+- **Available slots**  
+  - `get_available_slots(date, duration_minutes)` walks the workday in fixed steps and returns open slots that:
+    - Do not overlap existing appointments.
+    - Respect lunch and holidays.
+- **Conflict resolution**  
+  - When a requested time conflicts, `suggest_next_free_slot(candidate)` searches forward on that day for the next free window of the same duration.
 
-This README can serve both as documentation for evaluators and as a guide during your live demo.
+These utilities are reused across scheduling, conflict handling, rescheduling, and date‑only booking flows.
 
 ---
 
-### 9. Deployment & GitHub
+### 8. Deployment & GitHub
 
-#### 9.1. Uploading the project to GitHub
+#### 8.1. Basic GitHub steps
 
-From `C:\Users\sukh1\appointment_assistant`:
+From your repo root:
 
 ```bash
 git init
 git add .
 git commit -m "Initial multi-agent appointment assistant"
-
-# create an empty repo on GitHub, then:
 git branch -M main
 git remote add origin https://github.com/<your-username>/<your-repo-name>.git
 git push -u origin main
 ```
 
-Make sure to replace `<your-username>` and `<your-repo-name>` with your actual GitHub details.
+Replace `<your-username>` and `<your-repo-name>` with your actual GitHub info.
 
-#### 9.2. Deploying the Streamlit app
+#### 8.2. Deploying on Streamlit Community Cloud
 
-**Option A – Streamlit Community Cloud (very simple):**
+1. Push code to GitHub.
+2. Go to Streamlit Community Cloud and create a **New app**.
+3. Select your repo and branch `main`.
+4. Set the entry point to:
 
-1. Push your code to GitHub as described above.  
-2. Go to the Streamlit Community Cloud website and choose **New app**.  
-3. Select your GitHub repo, branch `main`, and set the entry point to `appointment_assistant/streamlit_app.py`.  
-4. The platform installs `requirements.txt` and hosts your app at a public URL you can share in your report or slides.
-
-**Option B – Run on your own server / VM:**
-
-1. Copy the project to a server (or use `git clone`).  
-2. Create a virtual environment and run `pip install -r requirements.txt`.  
-3. Start the app with:
-   ```bash
-   streamlit run appointment_assistant/streamlit_app.py --server.port 80 --server.address 0.0.0.0
+   ```text
+   appointment_assistant/streamlit_app.py
    ```
-4. Put a reverse proxy (e.g. Nginx) in front if you want a custom domain and HTTPS.
 
-**Option C – Hugging Face Spaces (public working link):**
+5. Deploy – it will install dependencies from `requirements.txt` and give you a public URL.
 
-- See **[DEPLOY_HUGGINGFACE.md](DEPLOY_HUGGINGFACE.md)** for step-by-step instructions to prepare the repo (root `requirements.txt`, correct folder layout), push to GitHub, create a Streamlit Space, and get a shareable URL.
+#### 8.3. Deploying on Hugging Face Spaces
 
-**Option D – Docker / container (optional):**
+See `DEPLOY_HUGGINGFACE.md` for a detailed guide. In summary:
 
-- Create a small `Dockerfile` that:
-  - Copies the code
-  - Installs dependencies
-  - Uses `streamlit run appointment_assistant/streamlit_app.py` as the container command  
-- Deploy that image to any container-friendly platform (Azure, AWS, Render, etc.).
+- Ensure the **repo root** contains:
+  - `appointment_assistant/` folder.
+  - Root-level `requirements.txt` (with `streamlit`, `python-dateutil`, `openai`).
+- Create a **Space** with SDK = **Streamlit**.
+- Set the app file to:
 
+  ```text
+  appointment_assistant/streamlit_app.py
+  ```
+
+- (Optional) Configure secrets:
+  - `OPENAI_API_KEY` (and optionally `OPENAI_MODEL`) to enable the LLM NLU.
+- After build completes, you get a **public link** to your assistant.
+
+#### 8.4. Docker / container (optional)
+
+You can also containerize the app:
+
+- Write a `Dockerfile` that:
+  - Copies the code.
+  - Installs requirements.
+  - Runs `streamlit run appointment_assistant/streamlit_app.py`.
+- Deploy the image to any container platform (AWS, Azure, Render, etc.).
+
+---
+
+### 9. Extensibility Ideas
+
+This project is intentionally structured for extension:
+
+- Swap the in-memory calendar with:
+  - Google Calendar, Outlook, or a database.
+- Add agents:
+  - **Reminder Agent** – sends reminders before events.
+  - **User Preferences Agent** – learns preferred times/days and suggests better slots.
+  - **Explanation Agent** – explains why certain slots were suggested or rejected.
+- Experiment with:
+  - Different LLM prompts or models.
+  - Separate NLU, Conflict, and Explanation models orchestrated together.
+
+Overall, the project demonstrates how a **multi-agent architecture plus optional LLMs** can provide a clear, explainable solution for appointment scheduling from natural language.
