@@ -77,7 +77,8 @@ def _detect_intent(text: str) -> str:
         return "greeting"
     if t in ("yes", "confirm", "ok", "sure", "yep"):
         return "confirm_yes"
-    if t in ("no", "nope", "cancel it", "no thanks"):
+    # "cancel it" and "delete it" are cancel/delete requests, not "no" to a pending confirm
+    if t in ("no", "nope", "no thanks"):
         return "confirm_no"
     if _is_out_of_scope(text):
         return "out_of_scope"
