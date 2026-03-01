@@ -39,6 +39,7 @@ def main() -> None:
     orchestrator = Orchestrator(calendar)
     pending_alternative = None
     pending_slot_request = None
+    pending_confirm = None
 
     while True:
         print("\nMenu:")
@@ -50,6 +51,18 @@ def main() -> None:
         if choice == "1":
             if pending_alternative:
                 print(f"\nSuggested slot: {pending_alternative.start.strftime('%Y-%m-%d %H:%M')}. Reply 'yes' to confirm or 'no' to decline.")
+            if pending_confirm:
+                ptype = pending_confirm.get("type")
+                if ptype == "booking":
+                    a = pending_confirm.get("appointment")
+                    print(f"\nConfirm: Book \"{a.title}\" on {a.start.strftime('%A %d %B at %H:%M')}? Reply 'yes' or 'no'.")
+                elif ptype == "cancel":
+                    a = pending_confirm.get("appointment")
+                    print(f"\nConfirm: Cancel \"{a.title}\" on {a.start.strftime('%A %d %B at %H:%M')}? Reply 'yes' or 'no'.")
+                elif ptype == "reschedule":
+                    old_a = pending_confirm.get("old_appointment")
+                    new_a = pending_confirm.get("new_appointment")
+                    print(f"\nConfirm: Move \"{old_a.title}\" to {new_a.start.strftime('%A %d %B at %H:%M')}? Reply 'yes' or 'no'.")
             if pending_slot_request:
                 print("\nPick a time from the list above (e.g. 2pm or 14:00):")
             user_text = input("\nYour message: ").strip()
@@ -57,8 +70,8 @@ def main() -> None:
                 print("Please enter something.")
                 continue
 
-            transcript, pending_alternative, pending_slot_request = orchestrator.handle_user_request(
-                user_text, pending_alternative, pending_slot_request
+            transcript, pending_alternative, pending_slot_request, pending_confirm = orchestrator.handle_user_request(
+                user_text, pending_alternative, pending_slot_request, pending_confirm
             )
             print_transcript(transcript)
 

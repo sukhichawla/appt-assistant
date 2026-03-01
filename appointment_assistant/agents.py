@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, time
+from datetime import date as date_type, datetime, timedelta, time
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -81,12 +81,17 @@ def _detect_intent(text: str) -> str:
         return "confirm_no"
     if _is_out_of_scope(text):
         return "out_of_scope"
-    if any(w in t for w in ("cancel", "remove", "delete")) and (
-        "appointment" in t or "meeting" in t or "event" in t
-    ):
-        return "cancel"
-    if any(w in t for w in ("reschedule", "move", "rebook", "change")) and (
-        "appointment" in t or "meeting" in t or " to " in t or " at " in t
+    # Cancel: user says cancel/remove/delete (even without "appointment") so "can you cancel please" is cancel
+    if any(w in t for w in ("cancel", "remove", "delete")):
+        # Don't treat "reschedule/move ... to" as cancel
+        if any(w in t for w in ("reschedule", "rebook", "change")) or ("move" in t and (" to " in t or " at " in t)):
+            pass  # fall through to reschedule or create
+        else:
+            return "cancel"
+    # Reschedule: user says reschedule/move/rebook/change (even without "appointment" or new time)
+    # so "can you reschedule it" or "reschedule please" is reschedule
+    if any(w in t for w in ("reschedule", "rebook", "change")) or (
+        "move" in t and ("appointment" in t or "meeting" in t or " to " in t or " at " in t or " it " in t)
     ):
         return "reschedule"
     if any(w in t for w in ("list", "show", "what", "view", "see")) and any(
@@ -404,14 +409,16 @@ class SchedulingAgent(Agent):
                 )
             ]
 
-        context.calendar.add(appointment)
-        context.state["final_appointment"] = appointment
-
+        # Don't add yet; ask for confirmation
         return [
             Message(
                 sender=self.name,
-                content="I successfully reserved that time on your calendar.",
-                metadata={"type": "schedule_success", "appointment": appointment},
+                content=(
+                    f"I'll book \"{appointment.title}\" on {appointment.start.strftime('%A %d %B %Y')} "
+                    f"from {appointment.start.strftime('%H:%M')} to {appointment.end.strftime('%H:%M')}. "
+                    "Reply **yes** to confirm or **no** to cancel."
+                ),
+                metadata={"type": "schedule_confirm_pending", "appointment": appointment},
             )
         ]
 
@@ -458,15 +465,67 @@ class ConflictResolutionAgent(Agent):
         ]
 
 
-def _find_appointment_by_text(calendar: CalendarStore, text: str) -> Optional[Appointment]:
-    """Find one appointment that best matches the user text (title or date/time)."""
+def _parse_requested_date_from_text(text: str) -> Optional[Tuple[date_type, str]]:
+    """
+    If the user text mentions a specific day/date, return (date, display_name) e.g. (date, "Thursday").
+    Otherwise return None. Used to filter appointments by day and to say "no appointment on Thursday".
+    """
     t = text.lower()
     now = datetime.now()
+    if "today" in t:
+        return (now.date(), "today")
+    if "tomorrow" in t:
+        return ((now + timedelta(days=1)).date(), "tomorrow")
+    weekdays = [
+        "monday", "tuesday", "wednesday", "thursday",
+        "friday", "saturday", "sunday",
+    ]
+    for i, name in enumerate(weekdays):
+        if name in t:
+            today_idx = now.weekday()
+            target_idx = i
+            days_ahead = (target_idx - today_idx) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            d = now.date() + timedelta(days=days_ahead)
+            display = name.capitalize()
+            return (d, display)
+    return None
+
+
+def _find_appointment_by_text(calendar: CalendarStore, text: str) -> Tuple[Optional[Appointment], Optional[str]]:
+    """
+    Find one appointment that best matches the user text (by day/date first, then title).
+    Returns (appointment, no_appointment_on_day_message).
+    - If user specified a day/date and there is no appointment on that day: (None, "You don't have any appointment on Thursday.").
+    - If user specified a day and there is one or more on that day: (first such appointment, None).
+    - If user did not specify a day: match by title (avoid matching only the word "appointment"); (None, None) if ambiguous or no match.
+    """
+    t = text.lower()
+    now = datetime.now()
+    requested = _parse_requested_date_from_text(text)
+
+    if requested is not None:
+        req_date, display_name = requested
+        on_day = [a for a in calendar.appointments if a.start.date() == req_date]
+        if not on_day:
+            return (None, f"You don't have any appointment on {display_name}.")
+        return (on_day[0], None)
+
+    # No specific day: match by title. Don't treat the word "appointment" alone as matching everything.
     candidates = []
+    title_words_skip = {"appointment", "meeting", "event"}  # too generic
     for a in calendar.appointments:
-        if a.title.lower() in t or any(w in t for w in a.title.lower().split()):
+        if a.title.lower() in t:
             candidates.append(a)
-        elif "today" in t and a.start.date() == now.date():
+            continue
+        words = [w for w in a.title.lower().split() if w not in title_words_skip]
+        if not words:
+            continue
+        if any(w in t for w in words):
+            candidates.append(a)
+            continue
+        if "today" in t and a.start.date() == now.date():
             candidates.append(a)
         elif "tomorrow" in t and a.start.date() == (now.date() + timedelta(days=1)):
             candidates.append(a)
@@ -476,8 +535,8 @@ def _find_appointment_by_text(calendar: CalendarStore, text: str) -> Optional[Ap
                     candidates.append(a)
                     break
     if not candidates:
-        return None
-    return candidates[0]
+        return (None, None)
+    return (candidates[0], None)
 
 
 def _parse_time_only(text: str) -> Optional[Tuple[int, int]]:
@@ -535,16 +594,25 @@ class RescheduleAgent(Agent):
             return [
                 Message(
                     sender=self.name,
-                    content="You don't have any appointments yet, so there's nothing to reschedule. Would you like to book one?",
+                    content="You don't have any appointments scheduled. Would you like to book one? (e.g. \"Book a meeting tomorrow at 2pm\")",
                     metadata={"type": "reschedule_error"},
                 )
             ]
-        existing = _find_appointment_by_text(calendar, user_text)
+        existing, no_appointment_on_day_msg = _find_appointment_by_text(calendar, user_text)
+        if no_appointment_on_day_msg:
+            return [
+                Message(
+                    sender=self.name,
+                    content=no_appointment_on_day_msg,
+                    metadata={"type": "reschedule_not_found"},
+                )
+            ]
         if not existing:
-            lines = ["I couldn't find that appointment. Your current appointments are:"]
+            # User said reschedule but didn't specify which appointment (e.g. "can you reschedule it")
+            lines = ["Which appointment would you like to reschedule? Your current appointments are:"]
             for a in calendar.appointments:
                 lines.append(f"• {a.title} — {a.start.strftime('%A %d %B at %H:%M')}")
-            lines.append("Please mention the exact title or date of the one you want to move.")
+            lines.append("Please mention the title or day/date and the new time (e.g. \"reschedule my dentist on Tuesday to 4pm\" or \"move my meeting to 3pm\").")
             return [
                 Message(
                     sender=self.name,
@@ -563,7 +631,6 @@ class RescheduleAgent(Agent):
             ]
         duration = existing.end - existing.start
         new_end = new_start + duration
-        calendar.remove(existing)
         new_appointment = Appointment(
             title=existing.title,
             start=new_start,
@@ -571,25 +638,27 @@ class RescheduleAgent(Agent):
             location=existing.location,
             notes=existing.notes or user_text,
         )
-        context.state["parsed_appointment"] = {
-            "title": new_appointment.title,
-            "start": new_appointment.start,
-            "end": new_appointment.end,
-            "location": new_appointment.location,
-            "notes": new_appointment.notes,
-        }
+        # Don't remove old or add new yet; ask for confirmation
         return [
             Message(
                 sender=self.name,
-                content=f"I've removed the old slot. Checking if {new_start.strftime('%Y-%m-%d %H:%M')} is free and booking it.",
-                metadata={"type": "reschedule_ready", "appointment": new_appointment},
+                content=(
+                    f"I'll move \"{existing.title}\" from {existing.start.strftime('%A %d %B at %H:%M')} "
+                    f"to {new_start.strftime('%A %d %B at %H:%M')}. "
+                    "Reply **yes** to confirm or **no** to keep the original time."
+                ),
+                metadata={
+                    "type": "reschedule_confirm_pending",
+                    "old_appointment": existing,
+                    "new_appointment": new_appointment,
+                },
             )
         ]
 
 
 class CancelAgent(Agent):
     """
-    Agent that finds an existing appointment and removes it from the calendar.
+    Agent that finds an existing appointment and asks for confirmation before removing it.
     """
 
     def __init__(self) -> None:
@@ -602,16 +671,25 @@ class CancelAgent(Agent):
             return [
                 Message(
                     sender=self.name,
-                    content="You don't have any appointments to cancel. Would you like to book one?",
+                    content="You don't have any appointments to cancel or delete. Would you like to book one? (e.g. \"Book a meeting tomorrow at 2pm\")",
                     metadata={"type": "cancel_error"},
                 )
             ]
-        existing = _find_appointment_by_text(calendar, user_text)
+        existing, no_appointment_on_day_msg = _find_appointment_by_text(calendar, user_text)
+        if no_appointment_on_day_msg:
+            return [
+                Message(
+                    sender=self.name,
+                    content=no_appointment_on_day_msg,
+                    metadata={"type": "cancel_not_found"},
+                )
+            ]
         if not existing:
-            lines = ["I couldn't find that appointment. Your current appointments are:"]
+            # User said cancel/delete but didn't specify which (e.g. "can you delete it", "can you cancel please")
+            lines = ["Which appointment would you like to cancel or delete? Your current appointments are:"]
             for a in calendar.appointments:
                 lines.append(f"• {a.title} — {a.start.strftime('%A %d %B at %H:%M')}")
-            lines.append("Please mention the exact title or date of the one you want to cancel.")
+            lines.append("Please mention the title or the day/date (e.g. \"cancel my dentist on Thursday\" or \"delete my meeting on Tuesday\").")
             return [
                 Message(
                     sender=self.name,
@@ -619,12 +697,15 @@ class CancelAgent(Agent):
                     metadata={"type": "cancel_not_found"},
                 )
             ]
-        calendar.remove(existing)
+        # Don't remove yet; ask for confirmation
         return [
             Message(
                 sender=self.name,
-                content=f"I've cancelled \"{existing.title}\" that was on {existing.start.strftime('%A %d %B at %H:%M')}.",
-                metadata={"type": "cancel_done"},
+                content=(
+                    f"I'll cancel \"{existing.title}\" on {existing.start.strftime('%A %d %B at %H:%M')}. "
+                    "Reply **yes** to confirm or **no** to keep it."
+                ),
+                metadata={"type": "cancel_confirm_pending", "appointment": existing},
             )
         ]
 
@@ -664,11 +745,15 @@ class NotificationAgent(Agent):
         ]
 
 
+# Type for pending confirmation: booking (add), cancel (remove), reschedule (remove old + add new)
+PendingConfirm = Optional[Dict[str, Any]]  # {"type": "booking"|"cancel"|"reschedule", "appointment" and/or "old_appointment"/"new_appointment"}
+
+
 class Orchestrator:
     """
     High-level controller that routes messages through the agents.
-    Returns (transcript, pending_alternative). When pending_alternative is set,
-    the caller should ask the user to confirm (yes/no) and call again with that response.
+    Returns (transcript, pending_alternative, pending_slot_request, pending_confirm).
+    When pending_confirm is set, the caller should ask the user yes/no and call again with that response.
     """
 
     def __init__(self, calendar: CalendarStore) -> None:
@@ -685,13 +770,79 @@ class Orchestrator:
         user_text: str,
         pending_alternative: Optional[Appointment] = None,
         pending_slot_request: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[List[Message], Optional[Appointment], Optional[Dict[str, Any]]]:
+        pending_confirm: PendingConfirm = None,
+    ) -> Tuple[List[Message], Optional[Appointment], Optional[Dict[str, Any]], PendingConfirm]:
         context = ConversationContext(self.calendar)
         transcript: List[Message] = []
         user_msg = Message(sender="User", content=user_text)
         transcript.append(user_msg)
         pending_out: Optional[Appointment] = None
         pending_slot_out: Optional[Dict[str, Any]] = None
+        pending_confirm_out: PendingConfirm = None
+
+        # Handle confirmation of a pending action (booking, cancel, reschedule)
+        if pending_confirm:
+            intent = _detect_intent(user_text)
+            if intent == "confirm_yes":
+                ptype = pending_confirm.get("type")
+                if ptype == "booking":
+                    appt = pending_confirm.get("appointment")
+                    if appt:
+                        context.calendar.add(appt)
+                        context.state["final_appointment"] = appt
+                        transcript.append(
+                            Message(
+                                sender="SchedulingAgent",
+                                content="I've booked that time.",
+                                metadata={"type": "schedule_success", "appointment": appt},
+                            )
+                        )
+                        notify_msgs = self.notifier.handle(transcript[-1], context)
+                        transcript.extend(notify_msgs)
+                elif ptype == "cancel":
+                    appt = pending_confirm.get("appointment")
+                    if appt:
+                        context.calendar.remove(appt)
+                        transcript.append(
+                            Message(
+                                sender="CancelAgent",
+                                content=f"I've cancelled \"{appt.title}\" that was on {appt.start.strftime('%A %d %B at %H:%M')}.",
+                                metadata={"type": "cancel_done"},
+                            )
+                        )
+                elif ptype == "reschedule":
+                    old_a = pending_confirm.get("old_appointment")
+                    new_a = pending_confirm.get("new_appointment")
+                    if old_a and new_a:
+                        context.calendar.remove(old_a)
+                        context.calendar.add(new_a)
+                        context.state["final_appointment"] = new_a
+                        transcript.append(
+                            Message(
+                                sender="SchedulingAgent",
+                                content=f"I've moved it to {new_a.start.strftime('%A %d %B at %H:%M')}.",
+                                metadata={"type": "schedule_success", "appointment": new_a},
+                            )
+                        )
+                        notify_msgs = self.notifier.handle(transcript[-1], context)
+                        transcript.extend(notify_msgs)
+                return transcript, None, None, None
+            if intent == "confirm_no":
+                if pending_confirm.get("type") == "booking":
+                    transcript.append(
+                        Message(sender="Assistant", content="No problem, I didn't book that.", metadata={"type": "confirm_declined"})
+                    )
+                elif pending_confirm.get("type") == "cancel":
+                    transcript.append(
+                        Message(sender="Assistant", content="No problem, I kept that appointment.", metadata={"type": "confirm_declined"})
+                    )
+                elif pending_confirm.get("type") == "reschedule":
+                    transcript.append(
+                        Message(sender="Assistant", content="No problem, I kept the original time.", metadata={"type": "confirm_declined"})
+                    )
+                return transcript, None, None, None
+            # User said something else; clear pending and fall through
+            pending_confirm = None
 
         # Handle time choice after we showed available slots (date-only booking)
         if pending_slot_request:
@@ -720,7 +871,7 @@ class Orchestrator:
                             metadata={"type": "slot_invalid"},
                         )
                     )
-                    return transcript, None, pending_slot_request
+                    return transcript, None, pending_slot_request, None
                 if context.calendar.find_conflicts(appointment):
                     transcript.append(
                         Message(
@@ -729,19 +880,21 @@ class Orchestrator:
                             metadata={"type": "slot_conflict"},
                         )
                     )
-                    return transcript, None, pending_slot_request
-                context.calendar.add(appointment)
-                context.state["final_appointment"] = appointment
+                    return transcript, None, pending_slot_request, None
+                # Ask for confirmation before booking
                 transcript.append(
                     Message(
                         sender="SchedulingAgent",
-                        content="Booked.",
-                        metadata={"type": "schedule_success", "appointment": appointment},
+                        content=(
+                            f"I'll book \"{appointment.title}\" on {appointment.start.strftime('%A %d %B %Y')} "
+                            f"from {appointment.start.strftime('%H:%M')} to {appointment.end.strftime('%H:%M')}. "
+                            "Reply **yes** to confirm or **no** to cancel."
+                        ),
+                        metadata={"type": "schedule_confirm_pending", "appointment": appointment},
                     )
                 )
-                notify_msgs = self.notifier.handle(transcript[-1], context)
-                transcript.extend(notify_msgs)
-                return transcript, None, None
+                pending_confirm_out = {"type": "booking", "appointment": appointment}
+                return transcript, None, None, pending_confirm_out
             # Not a time – clear and fall through (user might have said something else)
             pending_slot_request = None
 
@@ -759,7 +912,7 @@ class Orchestrator:
                 transcript.append(confirm_msg)
                 notify_msgs = self.notifier.handle(confirm_msg, context)
                 transcript.extend(notify_msgs)
-                return transcript, None, None
+                return transcript, None, None, None
             if intent == "confirm_no":
                 transcript.append(
                     Message(
@@ -768,7 +921,7 @@ class Orchestrator:
                         metadata={"type": "confirm_declined"},
                     )
                 )
-                return transcript, None, None
+                return transcript, None, None, None
 
         intent = _detect_intent(user_text)
 
@@ -787,7 +940,7 @@ class Orchestrator:
             transcript.append(
                 Message(sender="Assistant", content=content, metadata={"type": "greeting"})
             )
-            return transcript, None, None
+            return transcript, None, None, None
 
         # List / what do I have: reply with calendar summary, do not book
         if intent == "list":
@@ -802,7 +955,7 @@ class Orchestrator:
             transcript.append(
                 Message(sender="Assistant", content=content, metadata={"type": "list"})
             )
-            return transcript, None, None
+            return transcript, None, None, None
 
         # Out of scope: nice reply that we only help with appointments
         if intent == "out_of_scope":
@@ -818,41 +971,36 @@ class Orchestrator:
                     metadata={"type": "out_of_scope"},
                 )
             )
-            return transcript, None, None
+            return transcript, None, None, None
 
         # Cancel flow
         if intent == "cancel":
             cancel_msgs = self.cancel.handle(user_msg, context)
             transcript.extend(cancel_msgs)
-            return transcript, None, None
+            last_meta = (cancel_msgs[-1].metadata or {}) if cancel_msgs else {}
+            if last_meta.get("type") == "cancel_confirm_pending":
+                pending_confirm_out = {"type": "cancel", "appointment": last_meta.get("appointment")}
+            return transcript, None, None, pending_confirm_out
 
-        # Reschedule flow: RescheduleAgent -> SchedulingAgent -> [Conflict?] -> NotificationAgent
+        # Reschedule flow: RescheduleAgent -> [confirm] or -> SchedulingAgent if we had reschedule_ready
         if intent == "reschedule":
             resched_msgs = self.reschedule.handle(user_msg, context)
             transcript.extend(resched_msgs)
-            if not resched_msgs or (resched_msgs[-1].metadata or {}).get("type") not in (
-                "reschedule_ready",
-                "reschedule_done",
-            ):
-                return transcript, None, None
-            sched_msgs = self.scheduler.handle(resched_msgs[-1], context)
-            transcript.extend(sched_msgs)
-            last_meta = (sched_msgs[-1].metadata or {}) if sched_msgs else {}
-            if last_meta.get("type") == "schedule_conflict":
-                conflict_msgs = self.conflict.handle(sched_msgs[-1], context)
-                transcript.extend(conflict_msgs)
-                if conflict_msgs and (conflict_msgs[-1].metadata or {}).get("type") == "alternative_proposed":
-                    pending_out = conflict_msgs[-1].metadata.get("appointment")
-            else:
-                notify_msgs = self.notifier.handle(transcript[-1], context)
-                transcript.extend(notify_msgs)
-            return transcript, pending_out, None
+            last_meta = (resched_msgs[-1].metadata or {}) if resched_msgs else {}
+            if last_meta.get("type") == "reschedule_confirm_pending":
+                pending_confirm_out = {
+                    "type": "reschedule",
+                    "old_appointment": last_meta.get("old_appointment"),
+                    "new_appointment": last_meta.get("new_appointment"),
+                }
+                return transcript, None, None, pending_confirm_out
+            return transcript, None, None, None
 
         # Create-appointment flow
         nlu_msgs = self.nlu.handle(user_msg, context)
         transcript.extend(nlu_msgs)
         if nlu_msgs and (nlu_msgs[-1].metadata or {}).get("type") == "nlu_error":
-            return transcript, None, None
+            return transcript, None, None, None
 
         parsed = context.state.get("parsed_appointment")
         if parsed and parsed.get("date_only"):
@@ -872,7 +1020,7 @@ class Orchestrator:
                         metadata={"type": "no_slots"},
                     )
                 )
-                return transcript, None, None
+                return transcript, None, None, None
             slot_times = [s[0].strftime("%H:%M") for s in slots]
             slot_str = ", ".join(slot_times)
             transcript.append(
@@ -890,21 +1038,23 @@ class Orchestrator:
                 "date": parsed["start"].date(),
                 "duration_minutes": parsed.get("duration_minutes", 30),
             }
-            return transcript, None, pending_slot_out
+            return transcript, None, pending_slot_out, None
 
         sched_msgs = self.scheduler.handle(nlu_msgs[-1], context)
         transcript.extend(sched_msgs)
         last_meta = (sched_msgs[-1].metadata or {}) if sched_msgs else {}
 
+        if last_meta.get("type") == "schedule_confirm_pending":
+            pending_confirm_out = {"type": "booking", "appointment": last_meta.get("appointment")}
+            return transcript, None, None, pending_confirm_out
         if last_meta.get("type") == "schedule_conflict":
             conflict_msgs = self.conflict.handle(sched_msgs[-1], context)
             transcript.extend(conflict_msgs)
             if conflict_msgs and (conflict_msgs[-1].metadata or {}).get("type") == "alternative_proposed":
                 pending_out = conflict_msgs[-1].metadata.get("appointment")
-            # Do not auto-book; return and ask user to confirm
         else:
             notify_msgs = self.notifier.handle(transcript[-1], context)
             transcript.extend(notify_msgs)
 
-        return transcript, pending_out, None
+        return transcript, pending_out, None, None
 

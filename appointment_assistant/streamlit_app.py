@@ -108,6 +108,7 @@ def get_or_create_state() -> tuple[CalendarStore, Orchestrator]:
         st.session_state.last_transcript = None
         st.session_state.pending_alternative = None
         st.session_state.pending_slot_request = None
+        st.session_state.pending_confirm = None
         st.session_state.input_key_counter = 0
     return st.session_state.calendar, st.session_state.orchestrator
 
@@ -142,6 +143,7 @@ def render_sidebar_calendar(calendar: CalendarStore) -> None:
 def render_main(orchestrator: Orchestrator) -> None:
     pending_alt = st.session_state.get("pending_alternative")
     pending_slot = st.session_state.get("pending_slot_request")
+    pending_confirm = st.session_state.get("pending_confirm")
 
     st.markdown('<p class="main-title">Appointment Assistant</p>', unsafe_allow_html=True)
     st.markdown(
@@ -158,6 +160,27 @@ def render_main(orchestrator: Orchestrator) -> None:
         st.markdown(
             f'<div class="pending-banner">'
             f'Suggested: {pending_alt.start.strftime("%A %d %B at %H:%M")}. Reply <strong>yes</strong> or <strong>no</strong>.</div>',
+            unsafe_allow_html=True,
+        )
+    if pending_confirm:
+        ptype = pending_confirm.get("type")
+        if ptype == "booking":
+            a = pending_confirm.get("appointment")
+            msg = f"Book \"{a.title}\" on {a.start.strftime('%A %d %B at %H:%M')}?" if a else "Confirm booking?"
+        elif ptype == "cancel":
+            a = pending_confirm.get("appointment")
+            msg = f"Cancel \"{a.title}\" on {a.start.strftime('%A %d %B at %H:%M')}?" if a else "Confirm cancel?"
+        elif ptype == "reschedule":
+            old_a = pending_confirm.get("old_appointment")
+            new_a = pending_confirm.get("new_appointment")
+            if old_a and new_a:
+                msg = f"Move \"{old_a.title}\" to {new_a.start.strftime('%A %d %B at %H:%M')}?"
+            else:
+                msg = "Confirm reschedule?"
+        else:
+            msg = "Confirm? Reply **yes** or **no**."
+        st.markdown(
+            f'<div class="pending-banner">{msg} Reply <strong>yes</strong> or <strong>no</strong>.</div>',
             unsafe_allow_html=True,
         )
     if pending_slot:
@@ -208,7 +231,8 @@ def render_main(orchestrator: Orchestrator) -> None:
     with c1:
         submit = st.button("Send", type="primary", use_container_width=True)
     with c2:
-        if pending_alt:
+        show_yes_no = pending_alt or pending_confirm
+        if show_yes_no:
             yes_click = st.button("Yes", key="yes_btn", use_container_width=True)
             no_click = st.button("No", key="no_btn", use_container_width=True)
         else:
@@ -216,42 +240,43 @@ def render_main(orchestrator: Orchestrator) -> None:
     with c3:
         clear = st.button("Clear", use_container_width=True)
 
+    def update_after_request(transcript, p_alt, p_slot, p_confirm):
+        st.session_state.last_transcript = transcript
+        st.session_state.pending_alternative = p_alt
+        st.session_state.pending_slot_request = p_slot
+        st.session_state.pending_confirm = p_confirm
+        st.session_state.input_key_counter = st.session_state.get("input_key_counter", 0) + 1
+        st.rerun()
+
     if clear:
         st.session_state.last_transcript = None
         st.session_state.pending_alternative = None
         st.session_state.pending_slot_request = None
+        st.session_state.pending_confirm = None
         st.session_state.input_key_counter = st.session_state.get("input_key_counter", 0) + 1
         st.rerun()
 
-    if pending_alt and yes_click:
-        transcript, p_alt, p_slot = orchestrator.handle_user_request("yes", pending_alt, pending_slot)
-        st.session_state.last_transcript = transcript
-        st.session_state.pending_alternative = p_alt
-        st.session_state.pending_slot_request = p_slot
-        st.session_state.input_key_counter = st.session_state.get("input_key_counter", 0) + 1
-        st.rerun()
+    if show_yes_no and yes_click:
+        transcript, p_alt, p_slot, p_confirm = orchestrator.handle_user_request(
+            "yes", pending_alt, pending_slot, pending_confirm
+        )
+        update_after_request(transcript, p_alt, p_slot, p_confirm)
 
-    if pending_alt and no_click:
-        transcript, p_alt, p_slot = orchestrator.handle_user_request("no", pending_alt, pending_slot)
-        st.session_state.last_transcript = transcript
-        st.session_state.pending_alternative = p_alt
-        st.session_state.pending_slot_request = p_slot
-        st.session_state.input_key_counter = st.session_state.get("input_key_counter", 0) + 1
-        st.rerun()
+    if show_yes_no and no_click:
+        transcript, p_alt, p_slot, p_confirm = orchestrator.handle_user_request(
+            "no", pending_alt, pending_slot, pending_confirm
+        )
+        update_after_request(transcript, p_alt, p_slot, p_confirm)
 
     if submit:
         cleaned = user_text.strip()
         if not cleaned:
             st.warning("Please enter a message.")
         else:
-            transcript, p_alt, p_slot = orchestrator.handle_user_request(
-                cleaned, pending_alt, pending_slot
+            transcript, p_alt, p_slot, p_confirm = orchestrator.handle_user_request(
+                cleaned, pending_alt, pending_slot, pending_confirm
             )
-            st.session_state.last_transcript = transcript
-            st.session_state.pending_alternative = p_alt
-            st.session_state.pending_slot_request = p_slot
-            st.session_state.input_key_counter = st.session_state.get("input_key_counter", 0) + 1
-            st.rerun()
+            update_after_request(transcript, p_alt, p_slot, p_confirm)
 
 
 def main() -> None:
