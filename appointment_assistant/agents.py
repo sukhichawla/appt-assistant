@@ -133,18 +133,87 @@ class Agent:
         raise NotImplementedError
 
 
+def _message_looks_like_time_only(text: str) -> bool:
+    """True if the message is short and contains a time but no date keyword (today/tomorrow/weekday)."""
+    t = text.lower().strip()
+    if len(t) > 50:
+        return False
+    has_time = bool(re.search(r"\d{1,2}\s*(am|pm)\b|\d{1,2}:\d{2}\b|at\s+\d{1,2}\b", t, re.IGNORECASE))
+    if not has_time:
+        return False
+    date_words = ("today", "tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    return not any(w in t for w in date_words)
+
+
+def _message_looks_like_date_only(text: str) -> bool:
+    """True if the message is short and contains a date keyword but no explicit time."""
+    t = text.lower().strip()
+    if len(t) > 50:
+        return False
+    date_words = ("today", "tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    has_date = any(w in t for w in date_words)
+    has_time = bool(re.search(r"\d{1,2}\s*(am|pm)\b|\d{1,2}:\d{2}\b", t, re.IGNORECASE))
+    return has_date and not has_time
+
+
+def _merge_parsed_with_last_context(
+    parsed: Dict[str, Any], user_text: str, last_context: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    If we have last_booking_context and the current message looks like a follow-up
+    (e.g. just "2pm" or just "tomorrow"), merge so we remember what we discussed.
+    """
+    if not last_context:
+        return parsed
+    t = user_text.lower().strip()
+    start = last_context.get("start")
+    if isinstance(start, datetime):
+        last_date = start.date()
+    else:
+        last_date = getattr(start, "date", lambda: None)() if start else None
+    last_title = last_context.get("title") or "appointment"
+    last_duration = last_context.get("duration_minutes", 30)
+
+    # User said only a time (e.g. "2pm", "how about 4pm") – use previous date + title
+    if last_date and _message_looks_like_time_only(user_text):
+        new_start = parsed["start"]
+        merged_start = datetime.combine(last_date, new_start.time())
+        merged_end = merged_start + timedelta(minutes=last_duration)
+        return {
+            **parsed,
+            "title": last_title if (parsed.get("title") or "appointment") == "appointment" else parsed["title"],
+            "start": merged_start,
+            "end": merged_end,
+            "date_only": False,
+            "duration_minutes": last_duration,
+        }
+
+    # User said only a date (e.g. "tomorrow", "next Monday") – use previous title + new date
+    if _message_looks_like_date_only(user_text) and last_title != "appointment":
+        new_start = parsed["start"]
+        merged_end = new_start + timedelta(minutes=last_duration)
+        return {
+            **parsed,
+            "title": last_title,
+            "start": new_start,
+            "end": merged_end,
+            "duration_minutes": last_duration,
+        }
+
+    return parsed
+
+
 class NLUAgent(Agent):
     """
     Light‑weight natural language understanding agent.
-
-    For the capstone you can swap the rule-based parser with an LLM call.
+    Uses last_booking_context from conversation when the current message is a follow-up
+    (e.g. "2pm" after discussing a date, or "tomorrow" after discussing a title).
     """
 
     def __init__(self) -> None:
         super().__init__("NLUAgent")
 
     def handle(self, message: Message, context: ConversationContext) -> List[Message]:
-        # Prefer a real LLM when configured; fall back to the rule-based parser otherwise.
         user_text = message.content
         parsed: Optional[Dict[str, Any]] = None
 
@@ -170,6 +239,9 @@ class NLUAgent(Agent):
                 )
             ]
 
+        # Merge with previous conversation context when user sends a follow-up (e.g. "2pm" or "tomorrow")
+        last_context = context.state.get("last_booking_context")
+        parsed = _merge_parsed_with_last_context(parsed, user_text, last_context)
         context.state["parsed_appointment"] = parsed
 
         if parsed.get("date_only"):
@@ -772,8 +844,10 @@ class Orchestrator:
         pending_alternative: Optional[Appointment] = None,
         pending_slot_request: Optional[Dict[str, Any]] = None,
         pending_confirm: PendingConfirm = None,
+        last_booking_context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Message], Optional[Appointment], Optional[Dict[str, Any]], PendingConfirm]:
         context = ConversationContext(self.calendar)
+        context.state["last_booking_context"] = last_booking_context
         transcript: List[Message] = []
         user_msg = Message(sender="User", content=user_text)
         transcript.append(user_msg)

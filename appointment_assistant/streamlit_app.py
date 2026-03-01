@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, time
 from pathlib import Path
 
 _root = Path(__file__).resolve().parent.parent
@@ -109,6 +110,7 @@ def get_or_create_state() -> tuple[CalendarStore, Orchestrator]:
         st.session_state.pending_alternative = None
         st.session_state.pending_slot_request = None
         st.session_state.pending_confirm = None
+        st.session_state.last_booking_context = None
         st.session_state.input_key_counter = 0
     return st.session_state.calendar, st.session_state.orchestrator
 
@@ -245,26 +247,57 @@ def render_main(orchestrator: Orchestrator) -> None:
         st.session_state.pending_alternative = p_alt
         st.session_state.pending_slot_request = p_slot
         st.session_state.pending_confirm = p_confirm
+        # Remember last discussed date/title for follow-up messages (e.g. "2pm" or "tomorrow")
+        if p_slot:
+            d = p_slot.get("date")
+            if hasattr(d, "date"):
+                d = d.date()
+            st.session_state.last_booking_context = {
+                "title": p_slot.get("title", "appointment"),
+                "start": datetime.combine(d, time(9, 0)),
+                "date_only": True,
+                "duration_minutes": p_slot.get("duration_minutes", 30),
+            }
+        elif transcript and len(transcript) >= 1:
+            last_msg = transcript[-1]
+            meta = getattr(last_msg, "metadata", None) or {}
+            if meta.get("type") == "nlu_parsed" and meta.get("appointment"):
+                apt = meta["appointment"]
+                st.session_state.last_booking_context = {
+                    "title": apt.get("title", "appointment"),
+                    "start": apt.get("start"),
+                    "date_only": apt.get("date_only", False),
+                    "duration_minutes": apt.get("duration_minutes", 30),
+                }
+            elif meta.get("type") in ("schedule_success", "cancel_done", "notify_success"):
+                st.session_state.last_booking_context = None
+            else:
+                st.session_state.last_booking_context = st.session_state.get("last_booking_context")
+        else:
+            st.session_state.last_booking_context = None
         st.session_state.input_key_counter = st.session_state.get("input_key_counter", 0) + 1
         st.rerun()
+
+    last_booking_context = st.session_state.get("last_booking_context")
 
     if clear:
         st.session_state.last_transcript = None
         st.session_state.pending_alternative = None
         st.session_state.pending_slot_request = None
         st.session_state.pending_confirm = None
+        st.session_state.last_booking_context = None
         st.session_state.input_key_counter = st.session_state.get("input_key_counter", 0) + 1
         st.rerun()
 
     if show_yes_no and yes_click:
         transcript, p_alt, p_slot, p_confirm = orchestrator.handle_user_request(
-            "yes", pending_alt, pending_slot, pending_confirm
+            "yes", pending_alt, pending_slot, pending_confirm, last_booking_context
         )
         update_after_request(transcript, p_alt, p_slot, p_confirm)
 
     if show_yes_no and no_click:
         transcript, p_alt, p_slot, p_confirm = orchestrator.handle_user_request(
-            "no", pending_alt, pending_slot, pending_confirm
+            "no", pending_alt, pending_slot, pending_confirm, last_booking_context
         )
         update_after_request(transcript, p_alt, p_slot, p_confirm)
 
@@ -274,7 +307,7 @@ def render_main(orchestrator: Orchestrator) -> None:
             st.warning("Please enter a message.")
         else:
             transcript, p_alt, p_slot, p_confirm = orchestrator.handle_user_request(
-                cleaned, pending_alt, pending_slot, pending_confirm
+                cleaned, pending_alt, pending_slot, pending_confirm, last_booking_context
             )
             update_after_request(transcript, p_alt, p_slot, p_confirm)
 
